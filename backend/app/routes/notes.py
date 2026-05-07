@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Blueprint, current_app, jsonify, request
 
 from app.services.note_service import NoteService

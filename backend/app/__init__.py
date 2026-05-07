@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from flask import Flask
 from flask_cors import CORS
 from pymongo import MongoClient
 
-from app.config import Config
+from app.config import Config, require_env
 from app.routes.health import health_bp
 from app.routes.notes import notes_bp
 
@@ -28,7 +30,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     if app.config.get("MONGO_CLIENT"):
         client = app.config["MONGO_CLIENT"]
     else:
-        client = MongoClient(app.config["MONGODB_URI"])
+        uri = require_env("MONGODB_URI", app.config)
+        client = MongoClient(uri)
     db = client[app.config["MONGODB_DB"]]
     app.extensions["mongo_db"] = db
 
