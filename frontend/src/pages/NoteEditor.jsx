@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import MarkdownPreview from '../components/MarkdownPreview'
 import { createNote, deleteNote, getNote, updateNote } from '../services/notes'
 
 export default function NoteEditor() {
@@ -50,8 +51,8 @@ export default function NoteEditor() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="flex flex-col h-screen max-w-6xl mx-auto p-4">
+      <div className="flex items-center justify-between mb-3">
         <button
           onClick={() => navigate('/')}
           className="text-sm text-gray-500 hover:text-gray-900"
@@ -77,23 +78,28 @@ export default function NoteEditor() {
         </div>
       </div>
 
-      {error && <p className="text-red-600 text-sm mb-4">Error: {error}</p>}
+      {error && <p className="text-red-600 text-sm mb-2">Error: {error}</p>}
 
       <input
         type="text"
         placeholder="Title"
         value={title}
         onChange={e => setTitle(e.target.value)}
-        className="w-full text-xl font-semibold border-0 border-b border-gray-200 pb-2 mb-4 focus:outline-none focus:border-indigo-400"
+        className="w-full text-xl font-semibold border-0 border-b border-gray-200 pb-2 mb-3 focus:outline-none focus:border-indigo-400"
       />
 
-      <textarea
-        placeholder="Write your note…"
-        value={body}
-        onChange={e => setBody(e.target.value)}
-        rows={20}
-        className="w-full text-sm text-gray-700 border-0 focus:outline-none resize-none font-mono"
-      />
+      <div className="flex flex-col md:flex-row flex-1 gap-0 border border-gray-200 rounded overflow-hidden min-h-0">
+        <textarea
+          aria-label="Markdown editor"
+          placeholder="Write your note in Markdown…"
+          value={body}
+          onChange={e => setBody(e.target.value)}
+          className="flex-1 p-4 text-sm text-gray-700 font-mono resize-none focus:outline-none border-b md:border-b-0 md:border-r border-gray-200"
+        />
+        <div className="flex-1 p-4 overflow-auto bg-white">
+          <MarkdownPreview content={body} />
+        </div>
+      </div>
     </div>
   )
 }
