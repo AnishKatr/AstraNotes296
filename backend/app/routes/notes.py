@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from app.services.encryption_service import DecryptionFailedError
 from app.services.note_service import InvalidNoteTypeError, NoteService
+from app.services.version_history_service import VersionHistoryService
 
 notes_bp = Blueprint("notes", __name__, url_prefix="/api/notes")
 
@@ -11,7 +12,14 @@ notes_bp = Blueprint("notes", __name__, url_prefix="/api/notes")
 def _service() -> NoteService:
     db = current_app.extensions["mongo_db"]
     enc_svc = current_app.extensions.get("encryption_service")
-    return NoteService(db, enc_svc)
+    ver_svc = VersionHistoryService(db)
+    return NoteService(db, enc_svc, ver_svc)
+
+
+def _version_service() -> tuple[VersionHistoryService, object]:
+    db = current_app.extensions["mongo_db"]
+    enc_svc = current_app.extensions.get("encryption_service")
+    return VersionHistoryService(db), enc_svc
 
 
 @notes_bp.get("")
@@ -84,3 +92,28 @@ def delete_note(note_id: str):
     if not ok:
         return jsonify({"error": "not found"}), 404
     return "", 204
+
+
+@notes_bp.get("/<note_id>/versions")
+def list_versions(note_id: str):
+    ver_svc, enc_svc = _version_service()
+    try:
+        previews = ver_svc.list_version_previews(note_id, enc_svc)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if previews is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(previews)
+
+
+@notes_bp.post("/<note_id>/restore/<snapshot_id>")
+def restore_version(note_id: str, snapshot_id: str):
+    try:
+        note = _service().restore_version(note_id, snapshot_id)
+    except DecryptionFailedError:
+        return jsonify({"error": "Decryption failed.", "code": "DECRYPTION_FAILED"}), 403
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if note is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(note)

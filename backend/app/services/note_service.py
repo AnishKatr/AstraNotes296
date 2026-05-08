@@ -1,4 +1,4 @@
-"""FR-01: note CRUD with soft delete. FR-03: transparent encrypt/decrypt. FR-06: search/filter."""
+"""FR-01: note CRUD with soft delete. FR-03: transparent encrypt/decrypt. FR-06: search/filter. FR-05: version snapshots."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.services.plugin_registry import get_plugin_registry
 
 if TYPE_CHECKING:
     from app.services.encryption_service import EncryptionService
+    from app.services.version_history_service import VersionHistoryService
 
 
 def _utc_now() -> datetime:
@@ -42,9 +43,15 @@ def _serialize(doc: dict[str, Any], body: Any = _UNSET) -> dict[str, Any]:
 
 
 class NoteService:
-    def __init__(self, db: Database, enc_svc: EncryptionService | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        enc_svc: EncryptionService | None = None,
+        version_svc: VersionHistoryService | None = None,
+    ) -> None:
         self._col = db.notes
         self._enc_svc = enc_svc
+        self._version_svc = version_svc
 
     def create(self, title: str, body: str, note_type: str) -> dict[str, Any]:
         t = (title or "").strip()
@@ -92,6 +99,11 @@ class NoteService:
                 raise ValueError("title cannot be empty")
             updates["title"] = t
         if body is not None:
+            # Snapshot the current stored body before overwriting it.
+            # For secure notes, existing["body"] is already AES-256-GCM ciphertext;
+            # snapshots mirror storage format, so no extra encrypt/decrypt is needed here.
+            if self._version_svc:
+                self._version_svc.create_snapshot(note_id, existing["body"], _utc_now())
             handler = get_plugin_registry().get_handler(existing["note_type"])
             stored_body, is_encrypted = handler.transform_write(body, self._enc_svc)
             updates["body"] = stored_body
@@ -136,23 +148,12 @@ class NoteService:
         if note_type is not None and not get_plugin_registry().is_registered(note_type):
             raise InvalidNoteTypeError(f"Invalid note type: {note_type!r}")
 
-        # Build a list of independent filter conditions so $or clauses
-        # (search and cursor) never overwrite each other. Combined with $and.
         conditions: list[dict[str, Any]] = [{"deleted": {"$ne": True}}]
         if note_type:
             conditions.append({"note_type": note_type})
 
         search_term = (q or "").strip()
         if search_term:
-            # Case-insensitive regex handles partial/prefix/substring matches.
-            # $text (the index on this collection) only matches full words and
-            # cannot be nested inside the $and structure required for cursor
-            # pagination -- MongoDB's query planner rejects it. Regex is used
-            # instead. Performance is a full collection scan but is acceptable
-            # for the expected note volumes; Atlas Search would be the upgrade
-            # path if this became a bottleneck.
-            # Secure note bodies are AES-256-GCM ciphertext; a regex over
-            # base64 output will not match any plaintext search term (FR-06, SPR-01).
             escaped = re.escape(search_term)
             conditions.append({"$or": [
                 {"title": {"$regex": escaped, "$options": "i"}},
@@ -180,19 +181,47 @@ class NoteService:
 
         items = []
         for doc in docs:
-            # Encrypted bodies are suppressed in list view; only returned on
-            # individual GET to avoid bulk decryption on every page load.
             body = None if doc.get("is_encrypted") else doc["body"]
             items.append(_serialize(doc, body))
 
         next_cursor = str(docs[-1]["_id"]) if len(docs) == limit else None
         return items, total, next_cursor
 
-    def _decrypt_body(self, doc: dict[str, Any]) -> str:
-        """Decrypt body if is_encrypted, otherwise return as-is.
+    def restore_version(self, note_id: str, snapshot_id: str) -> dict[str, Any] | None:
+        """Restore a snapshot body to the note, snapshotting the current state first.
 
-        Raises DecryptionFailedError (from EncryptionService) on failure.
+        The snapshot body is written directly without re-encryption; it is already
+        in storage format (ciphertext for secure notes, plaintext otherwise).
+        Returns None when the note or snapshot is not found (caller maps to 404).
+        Soft-deleted notes are excluded: they return None here, same as GET.
         """
+        oid = self._parse_id(note_id)
+        existing = self._col.find_one({"_id": oid, "deleted": {"$ne": True}})
+        if not existing:
+            return None
+
+        if self._version_svc is None:
+            raise RuntimeError("VersionHistoryService is not configured.")
+
+        snapshot = self._version_svc.get_snapshot(note_id, snapshot_id)
+        if snapshot is None:
+            return None
+
+        # Snapshot the current body so the restore itself is reversible.
+        self._version_svc.create_snapshot(note_id, existing["body"], _utc_now())
+
+        now = _utc_now()
+        result = self._col.find_one_and_update(
+            {"_id": oid, "deleted": {"$ne": True}},
+            {"$set": {"body": snapshot["body"], "updated_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not result:
+            return None
+        return _serialize(result, self._decrypt_body(result))
+
+    def _decrypt_body(self, doc: dict[str, Any]) -> str:
+        """Decrypt body if is_encrypted, otherwise return as-is."""
         if doc.get("is_encrypted"):
             handler = get_plugin_registry().get_handler(doc["note_type"])
             return handler.transform_read(doc["body"], self._enc_svc)
