@@ -2,7 +2,6 @@
 
 import base64
 import os
-import re
 
 import mongomock
 import pytest
@@ -12,54 +11,6 @@ from app import create_app
 _VALID_KEY = base64.b64encode(os.urandom(32)).decode()
 
 
-# ---------------------------------------------------------------------------
-# mongomock compatibility shim: $text → $regex
-#
-# mongomock does not implement the $text operator. TextSearchCollection wraps
-# a mongomock collection and rewrites {$text: {$search: "q"}} to an $or of
-# $regex conditions at query-execution time. The functional behavior is
-# identical for our test cases because:
-#   - plaintext titles/bodies match the regex as they would a text index
-#   - encrypted ciphertext (base64 AES-GCM) will not contain the plaintext
-#     search terms, just as it would not match a real MongoDB text index
-# This shim lives only in tests; production always uses real MongoDB + $text.
-# ---------------------------------------------------------------------------
-
-class TextSearchCollection:
-    def __init__(self, col):
-        self._col = col
-
-    def __getattr__(self, name):
-        return getattr(self._col, name)
-
-    @staticmethod
-    def _rewrite(query: dict) -> dict:
-        if "$text" not in query:
-            return query
-        search = query["$text"]["$search"]
-        q = {k: v for k, v in query.items() if k != "$text"}
-        terms = [re.escape(t) for t in search.split() if t]
-        if terms:
-            pattern = "|".join(terms)
-            text_filter = {"$or": [
-                {"title": {"$regex": pattern, "$options": "i"}},
-                {"body": {"$regex": pattern, "$options": "i"}},
-            ]}
-            # Combine with any existing $or from cursor pagination via $and.
-            if "$or" in q:
-                q["$and"] = [{"$or": q.pop("$or")}, text_filter]
-            else:
-                q.update(text_filter)
-        return q
-
-    def find(self, query=None, *args, **kwargs):
-        return self._col.find(self._rewrite(query or {}), *args, **kwargs)
-
-    def find_one(self, query=None, *args, **kwargs):
-        return self._col.find_one(self._rewrite(query or {}), *args, **kwargs)
-
-    def count_documents(self, query, *args, **kwargs):
-        return self._col.count_documents(self._rewrite(query), *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +23,9 @@ class TextSearchCollection:
 
 @pytest.fixture
 def search_app():
-    """App with encryption + TextSearchCollection shim for $text → $regex."""
+    """App with encryption key for tests that create secure notes."""
     mc = mongomock.MongoClient()
-    app = create_app(
+    return create_app(
         {
             "TESTING": True,
             "MONGO_CLIENT": mc,
@@ -83,10 +34,6 @@ def search_app():
             "ENCRYPTION_KEY": _VALID_KEY,
         }
     )
-    # Monkey-patch db.notes so every NoteService instantiation uses the shim.
-    db = app.extensions["mongo_db"]
-    db.notes = TextSearchCollection(db["notes"])
-    return app
 
 
 @pytest.fixture

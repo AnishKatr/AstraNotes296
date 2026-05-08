@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -123,45 +124,64 @@ class NoteService:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[dict[str, Any]], int, str | None]:
-        """List notes with optional text search, type filter, and cursor pagination.
+        """List notes with optional search, type filter, and cursor pagination.
 
-        Secure note bodies are stored as ciphertext, so a body text search will
-        not match their content. This is intentional: we never decrypt during a
-        list query. Secure notes are still findable by title since titles are
-        stored as plaintext.
+        Search uses case-insensitive $regex on title and body, which handles
+        partial, prefix, and substring matches. Secure note bodies are
+        AES-256-GCM ciphertext; regex over base64 output will not match any
+        plaintext term, so secure notes are only findable by title (FR-06, SPR-01).
         """
         limit = max(1, min(limit, 100))
 
         if note_type is not None and not get_plugin_registry().is_registered(note_type):
             raise InvalidNoteTypeError(f"Invalid note type: {note_type!r}")
 
-        base_query: dict[str, Any] = {"deleted": {"$ne": True}}
+        # Build a list of independent filter conditions so $or clauses
+        # (search and cursor) never overwrite each other. Combined with $and.
+        conditions: list[dict[str, Any]] = [{"deleted": {"$ne": True}}]
         if note_type:
-            base_query["note_type"] = note_type
+            conditions.append({"note_type": note_type})
+
         search_term = (q or "").strip()
         if search_term:
-            base_query["$text"] = {"$search": search_term}
+            # Case-insensitive regex handles partial/prefix/substring matches.
+            # $text (the index on this collection) only matches full words and
+            # cannot be nested inside the $and structure required for cursor
+            # pagination -- MongoDB's query planner rejects it. Regex is used
+            # instead. Performance is a full collection scan but is acceptable
+            # for the expected note volumes; Atlas Search would be the upgrade
+            # path if this became a bottleneck.
+            # Secure note bodies are AES-256-GCM ciphertext; a regex over
+            # base64 output will not match any plaintext search term (FR-06, SPR-01).
+            escaped = re.escape(search_term)
+            conditions.append({"$or": [
+                {"title": {"$regex": escaped, "$options": "i"}},
+                {"body": {"$regex": escaped, "$options": "i"}},
+            ]})
 
-        total = self._col.count_documents(base_query)
+        def _q(conds: list[dict[str, Any]]) -> dict[str, Any]:
+            return {"$and": conds} if len(conds) > 1 else conds[0]
 
-        page_query: dict[str, Any] = dict(base_query)
+        total = self._col.count_documents(_q(conditions))
+
+        page_conditions = list(conditions)
         if cursor:
             cursor_oid = self._parse_id(cursor)
             cursor_doc = self._col.find_one({"_id": cursor_oid}, {"updated_at": 1})
             if cursor_doc:
                 cursor_time = cursor_doc["updated_at"]
-                page_query["$or"] = [
+                page_conditions.append({"$or": [
                     {"updated_at": {"$lt": cursor_time}},
                     {"updated_at": cursor_time, "_id": {"$lt": cursor_oid}},
-                ]
+                ]})
 
         sort = [("updated_at", -1), ("_id", -1)]
-        docs = list(self._col.find(page_query).sort(sort).limit(limit))
+        docs = list(self._col.find(_q(page_conditions)).sort(sort).limit(limit))
 
         items = []
         for doc in docs:
-            # Encrypted bodies are suppressed in list view; plaintext is returned
-            # only on the individual GET to avoid bulk decryption on every page load.
+            # Encrypted bodies are suppressed in list view; only returned on
+            # individual GET to avoid bulk decryption on every page load.
             body = None if doc.get("is_encrypted") else doc["body"]
             items.append(_serialize(doc, body))
 
