@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from app.services.secure_note_handler import NoteTypeHandler, SecureNoteHandler
+
+
 @dataclass(frozen=True)
 class NoteTypeSpec:
-    """Metadata for a registered note type (handlers added per tier)."""
+    """Metadata and behaviour for a registered note type."""
 
     type_id: str
+    handler: NoteTypeHandler = field(default_factory=NoteTypeHandler)
 
 
 class PluginRegistry:
@@ -19,6 +24,9 @@ class PluginRegistry:
 
     def _register_defaults(self) -> None:
         self.register("text", NoteTypeSpec(type_id="text"))
+        # Voice uses the passthrough handler; full recording support is Phase 6.
+        self.register("voice", NoteTypeSpec(type_id="voice"))
+        self.register("secure", NoteTypeSpec(type_id="secure", handler=SecureNoteHandler()))
 
     def register(self, type_id: str, spec: NoteTypeSpec) -> None:
         self._types[type_id] = spec
@@ -29,6 +37,12 @@ class PluginRegistry:
     def validate_type_or_raise(self, type_id: str) -> None:
         if not self.is_registered(type_id):
             raise ValueError(f"Unregistered note type: {type_id!r}")
+
+    def get_handler(self, type_id: str) -> NoteTypeHandler:
+        spec = self._types.get(type_id)
+        if spec is None:
+            return NoteTypeHandler()
+        return spec.handler
 
 
 _registry = PluginRegistry()

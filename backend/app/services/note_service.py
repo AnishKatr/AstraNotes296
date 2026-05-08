@@ -1,9 +1,10 @@
-"""FR-01: note CRUD with soft delete."""
+"""FR-01: note CRUD with soft delete. FR-03: transparent encrypt/decrypt. FR-06: search/filter."""
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -12,17 +13,28 @@ from pymongo.database import Database
 
 from app.services.plugin_registry import get_plugin_registry
 
+if TYPE_CHECKING:
+    from app.services.encryption_service import EncryptionService
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _serialize(doc: dict[str, Any]) -> dict[str, Any]:
+_UNSET = object()
+
+
+class InvalidNoteTypeError(ValueError):
+    """Raised when an unrecognized note_type is used as a filter (FR-06)."""
+
+
+def _serialize(doc: dict[str, Any], body: Any = _UNSET) -> dict[str, Any]:
     return {
         "id": str(doc["_id"]),
         "title": doc["title"],
-        "body": doc["body"],
+        "body": doc["body"] if body is _UNSET else body,
         "note_type": doc["note_type"],
+        "is_encrypted": doc.get("is_encrypted", False),
         "created_at": doc["created_at"].isoformat().replace("+00:00", "Z"),
         "updated_at": doc["updated_at"].isoformat().replace("+00:00", "Z"),
         "deleted": doc.get("deleted", False),
@@ -30,34 +42,49 @@ def _serialize(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 class NoteService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, enc_svc: EncryptionService | None = None) -> None:
         self._col = db.notes
+        self._enc_svc = enc_svc
 
     def create(self, title: str, body: str, note_type: str) -> dict[str, Any]:
         t = (title or "").strip()
         if not t:
             raise ValueError("title cannot be empty")
-        get_plugin_registry().validate_type_or_raise(note_type)
+        registry = get_plugin_registry()
+        registry.validate_type_or_raise(note_type)
+        handler = registry.get_handler(note_type)
+        stored_body, is_encrypted = handler.transform_write(body or "", self._enc_svc)
         now = _utc_now()
         doc = {
             "title": t,
-            "body": body or "",
+            "body": stored_body,
             "note_type": note_type,
+            "is_encrypted": is_encrypted,
             "created_at": now,
             "updated_at": now,
             "deleted": False,
         }
         result = self._col.insert_one(doc)
         doc["_id"] = result.inserted_id
-        return _serialize(doc)
+        readable_body = handler.transform_read(stored_body, self._enc_svc)
+        return _serialize(doc, readable_body)
 
     def get(self, note_id: str) -> dict[str, Any] | None:
         oid = self._parse_id(note_id)
         doc = self._col.find_one({"_id": oid, "deleted": {"$ne": True}})
-        return _serialize(doc) if doc else None
+        if not doc:
+            return None
+        body = self._decrypt_body(doc)
+        return _serialize(doc, body)
 
-    def update(self, note_id: str, title: str | None, body: str | None) -> dict[str, Any] | None:
+    def update(
+        self, note_id: str, title: str | None, body: str | None
+    ) -> dict[str, Any] | None:
         oid = self._parse_id(note_id)
+        existing = self._col.find_one({"_id": oid, "deleted": {"$ne": True}})
+        if not existing:
+            return None
+
         updates: dict[str, Any] = {"updated_at": _utc_now()}
         if title is not None:
             t = title.strip()
@@ -65,16 +92,22 @@ class NoteService:
                 raise ValueError("title cannot be empty")
             updates["title"] = t
         if body is not None:
-            updates["body"] = body
+            handler = get_plugin_registry().get_handler(existing["note_type"])
+            stored_body, is_encrypted = handler.transform_write(body, self._enc_svc)
+            updates["body"] = stored_body
+            updates["is_encrypted"] = is_encrypted
+
         if len(updates) == 1:
-            doc = self._col.find_one({"_id": oid, "deleted": {"$ne": True}})
-            return _serialize(doc) if doc else None
+            return _serialize(existing, self._decrypt_body(existing))
+
         result = self._col.find_one_and_update(
             {"_id": oid, "deleted": {"$ne": True}},
             {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
-        return _serialize(result) if result else None
+        if not result:
+            return None
+        return _serialize(result, self._decrypt_body(result))
 
     def soft_delete(self, note_id: str) -> bool:
         oid = self._parse_id(note_id)
@@ -84,16 +117,86 @@ class NoteService:
         )
         return res.modified_count > 0
 
-    def list_notes(self, page: int = 1, limit: int = 50) -> tuple[list[dict[str, Any]], int]:
+    def list_notes(
+        self,
+        q: str | None = None,
+        note_type: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int, str | None]:
+        """List notes with optional search, type filter, and cursor pagination.
+
+        Search uses case-insensitive $regex on title and body, which handles
+        partial, prefix, and substring matches. Secure note bodies are
+        AES-256-GCM ciphertext; regex over base64 output will not match any
+        plaintext term, so secure notes are only findable by title (FR-06, SPR-01).
+        """
         limit = max(1, min(limit, 100))
-        page = max(1, page)
-        skip = (page - 1) * limit
-        query = {"deleted": {"$ne": True}}
-        total = self._col.count_documents(query)
-        cursor = (
-            self._col.find(query).sort("updated_at", -1).skip(skip).limit(limit)
-        )
-        return [_serialize(d) for d in cursor], total
+
+        if note_type is not None and not get_plugin_registry().is_registered(note_type):
+            raise InvalidNoteTypeError(f"Invalid note type: {note_type!r}")
+
+        # Build a list of independent filter conditions so $or clauses
+        # (search and cursor) never overwrite each other. Combined with $and.
+        conditions: list[dict[str, Any]] = [{"deleted": {"$ne": True}}]
+        if note_type:
+            conditions.append({"note_type": note_type})
+
+        search_term = (q or "").strip()
+        if search_term:
+            # Case-insensitive regex handles partial/prefix/substring matches.
+            # $text (the index on this collection) only matches full words and
+            # cannot be nested inside the $and structure required for cursor
+            # pagination -- MongoDB's query planner rejects it. Regex is used
+            # instead. Performance is a full collection scan but is acceptable
+            # for the expected note volumes; Atlas Search would be the upgrade
+            # path if this became a bottleneck.
+            # Secure note bodies are AES-256-GCM ciphertext; a regex over
+            # base64 output will not match any plaintext search term (FR-06, SPR-01).
+            escaped = re.escape(search_term)
+            conditions.append({"$or": [
+                {"title": {"$regex": escaped, "$options": "i"}},
+                {"body": {"$regex": escaped, "$options": "i"}},
+            ]})
+
+        def _q(conds: list[dict[str, Any]]) -> dict[str, Any]:
+            return {"$and": conds} if len(conds) > 1 else conds[0]
+
+        total = self._col.count_documents(_q(conditions))
+
+        page_conditions = list(conditions)
+        if cursor:
+            cursor_oid = self._parse_id(cursor)
+            cursor_doc = self._col.find_one({"_id": cursor_oid}, {"updated_at": 1})
+            if cursor_doc:
+                cursor_time = cursor_doc["updated_at"]
+                page_conditions.append({"$or": [
+                    {"updated_at": {"$lt": cursor_time}},
+                    {"updated_at": cursor_time, "_id": {"$lt": cursor_oid}},
+                ]})
+
+        sort = [("updated_at", -1), ("_id", -1)]
+        docs = list(self._col.find(_q(page_conditions)).sort(sort).limit(limit))
+
+        items = []
+        for doc in docs:
+            # Encrypted bodies are suppressed in list view; only returned on
+            # individual GET to avoid bulk decryption on every page load.
+            body = None if doc.get("is_encrypted") else doc["body"]
+            items.append(_serialize(doc, body))
+
+        next_cursor = str(docs[-1]["_id"]) if len(docs) == limit else None
+        return items, total, next_cursor
+
+    def _decrypt_body(self, doc: dict[str, Any]) -> str:
+        """Decrypt body if is_encrypted, otherwise return as-is.
+
+        Raises DecryptionFailedError (from EncryptionService) on failure.
+        """
+        if doc.get("is_encrypted"):
+            handler = get_plugin_registry().get_handler(doc["note_type"])
+            return handler.transform_read(doc["body"], self._enc_svc)
+        return doc["body"]
 
     @staticmethod
     def _parse_id(note_id: str) -> ObjectId:
