@@ -16,8 +16,12 @@ def _ensure_indexes(db) -> None:
     notes.create_index([("note_type", 1)])
     notes.create_index([("updated_at", -1)])
     notes.create_index([("deleted", 1)])
-    # FR-06: text search index. Title matches outrank body matches (weight 10 vs 1).
+    # FR-06: weighted text search index. Title matches outrank body matches (10 vs 1).
     # Secure note bodies are ciphertext and will never match; this is intentional.
+    # Drop the pre-Phase-4 unweighted index if it still exists before recreating.
+    existing = {idx["name"] for idx in notes.list_indexes()}
+    if "title_text_body_text" in existing:
+        notes.drop_index("title_text_body_text")
     try:
         notes.create_index(
             [("title", "text"), ("body", "text")],
