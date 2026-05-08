@@ -2,24 +2,33 @@ from __future__ import annotations
 
 from flask import Blueprint, current_app, jsonify, request
 
-from app.services.note_service import NoteService
+from app.services.encryption_service import DecryptionFailedError
+from app.services.note_service import InvalidNoteTypeError, NoteService
 
 notes_bp = Blueprint("notes", __name__, url_prefix="/api/notes")
 
 
 def _service() -> NoteService:
-    return NoteService(current_app.extensions["mongo_db"])
+    db = current_app.extensions["mongo_db"]
+    enc_svc = current_app.extensions.get("encryption_service")
+    return NoteService(db, enc_svc)
 
 
 @notes_bp.get("")
 def list_notes():
-    page = request.args.get("page", default=1, type=int)
-    limit = request.args.get("limit", default=50, type=int)
+    q = request.args.get("q", default=None)
+    note_type = request.args.get("type", default=None)
+    limit = max(1, min(request.args.get("limit", default=50, type=int), 100))
+    cursor = request.args.get("cursor", default=None)
     try:
-        items, total = _service().list_notes(page=page, limit=limit)
+        items, total, next_cursor = _service().list_notes(
+            q=q, note_type=note_type, limit=limit, cursor=cursor
+        )
+    except InvalidNoteTypeError:
+        return jsonify({"error": "invalid note type", "code": "INVALID_TYPE"}), 400
     except Exception:
-        return jsonify({"error": "invalid pagination"}), 400
-    return jsonify({"notes": items, "total": total, "page": page, "limit": limit})
+        return jsonify({"error": "invalid pagination", "code": "INVALID_PAGINATION"}), 400
+    return jsonify({"notes": items, "total": total, "next_cursor": next_cursor, "limit": limit})
 
 
 @notes_bp.post("")
@@ -30,6 +39,8 @@ def create_note():
     note_type = data.get("note_type", "text")
     try:
         note = _service().create(title=title, body=body, note_type=note_type)
+    except DecryptionFailedError:
+        return jsonify({"error": "Decryption failed.", "code": "DECRYPTION_FAILED"}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(note), 201
@@ -39,6 +50,8 @@ def create_note():
 def get_note(note_id: str):
     try:
         note = _service().get(note_id)
+    except DecryptionFailedError:
+        return jsonify({"error": "Decryption failed.", "code": "DECRYPTION_FAILED"}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     if not note:
@@ -53,10 +66,10 @@ def patch_note(note_id: str):
     body = data["body"] if "body" in data else None
     try:
         note = _service().update(note_id, title=title, body=body)
+    except DecryptionFailedError:
+        return jsonify({"error": "Decryption failed.", "code": "DECRYPTION_FAILED"}), 403
     except ValueError as e:
-        msg = str(e)
-        code = 400 if "empty" in msg or "invalid" in msg else 400
-        return jsonify({"error": msg}), code
+        return jsonify({"error": str(e)}), 400
     if not note:
         return jsonify({"error": "not found"}), 404
     return jsonify(note)

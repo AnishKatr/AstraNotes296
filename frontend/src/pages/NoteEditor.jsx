@@ -10,7 +10,9 @@ export default function NoteEditor() {
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const [isSecure, setIsSecure] = useState(false)
   const [error, setError] = useState(null)
+  const [decryptionFailed, setDecryptionFailed] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -18,9 +20,16 @@ export default function NoteEditor() {
     getNote(id)
       .then(note => {
         setTitle(note.title)
-        setBody(note.body)
+        setBody(note.body ?? '')
+        setIsSecure(note.note_type === 'secure')
       })
-      .catch(err => setError(err.message))
+      .catch(err => {
+        if (err.code === 'DECRYPTION_FAILED') {
+          setDecryptionFailed(true)
+        } else {
+          setError(err.message)
+        }
+      })
   }, [id, isNew])
 
   async function handleSave() {
@@ -28,7 +37,7 @@ export default function NoteEditor() {
     setSaving(true)
     try {
       if (isNew) {
-        const note = await createNote({ title, body, note_type: 'text' })
+        const note = await createNote({ title, body, note_type: isSecure ? 'secure' : 'text' })
         navigate(`/notes/${note.id}`, { replace: true })
       } else {
         await updateNote(id, { title, body })
@@ -80,26 +89,53 @@ export default function NoteEditor() {
 
       {error && <p className="text-red-600 text-sm mb-2">Error: {error}</p>}
 
-      <input
-        type="text"
-        placeholder="Title"
-        value={title}
-        onChange={e => setTitle(e.target.value)}
-        className="w-full text-xl font-semibold border-0 border-b border-gray-200 pb-2 mb-3 focus:outline-none focus:border-indigo-400"
-      />
-
-      <div className="flex flex-col md:flex-row flex-1 gap-0 border border-gray-200 rounded overflow-hidden min-h-0">
-        <textarea
-          aria-label="Markdown editor"
-          placeholder="Write your note in Markdown…"
-          value={body}
-          onChange={e => setBody(e.target.value)}
-          className="flex-1 p-4 text-sm text-gray-700 font-mono resize-none focus:outline-none border-b md:border-b-0 md:border-r border-gray-200"
-        />
-        <div className="flex-1 p-4 overflow-auto bg-white">
-          <MarkdownPreview content={body} />
+      {decryptionFailed ? (
+        <div className="flex flex-1 items-center justify-center">
+          <p className="text-red-600 text-sm">This note could not be decrypted.</p>
         </div>
-      </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-3 mb-3">
+            <input
+              type="text"
+              placeholder="Title"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              className="flex-1 text-xl font-semibold border-0 border-b border-gray-200 pb-2 focus:outline-none focus:border-indigo-400"
+            />
+            {!isNew && isSecure && (
+              <span className="shrink-0 text-xs font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded px-2 py-0.5">
+                Encrypted
+              </span>
+            )}
+          </div>
+
+          {isNew && (
+            <label className="flex items-center gap-2 text-sm text-gray-600 mb-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isSecure}
+                onChange={e => setIsSecure(e.target.checked)}
+                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              Mark as Secure (encrypted)
+            </label>
+          )}
+
+          <div className="flex flex-col md:flex-row flex-1 gap-0 border border-gray-200 rounded overflow-hidden min-h-0">
+            <textarea
+              aria-label="Markdown editor"
+              placeholder="Write your note in Markdown…"
+              value={body}
+              onChange={e => setBody(e.target.value)}
+              className="flex-1 p-4 text-sm text-gray-700 font-mono resize-none focus:outline-none border-b md:border-b-0 md:border-r border-gray-200"
+            />
+            <div className="flex-1 p-4 overflow-auto bg-white">
+              <MarkdownPreview content={body} />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
