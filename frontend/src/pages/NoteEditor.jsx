@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import MarkdownPreview from '../components/MarkdownPreview'
+import VersionHistoryPanel from '../components/VersionHistoryPanel'
 import { createNote, deleteNote, getNote, updateNote } from '../services/notes'
 
 export default function NoteEditor() {
@@ -14,6 +15,8 @@ export default function NoteEditor() {
   const [error, setError] = useState(null)
   const [decryptionFailed, setDecryptionFailed] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [saveCount, setSaveCount] = useState(0)
 
   useEffect(() => {
     if (isNew) return
@@ -41,6 +44,7 @@ export default function NoteEditor() {
         navigate(`/notes/${note.id}`, { replace: true })
       } else {
         await updateNote(id, { title, body })
+        setSaveCount(c => c + 1)
       }
     } catch (err) {
       setError(err.message)
@@ -59,6 +63,11 @@ export default function NoteEditor() {
     }
   }
 
+  function handleRestore(restoredNote) {
+    setTitle(restoredNote.title)
+    setBody(restoredNote.body ?? '')
+  }
+
   return (
     <div className="flex flex-col h-screen max-w-6xl mx-auto p-4">
       <div className="flex items-center justify-between mb-3">
@@ -68,7 +77,25 @@ export default function NoteEditor() {
         >
           &larr; Back
         </button>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {!isNew && (
+            <button
+              onClick={() => setShowHistory(h => !h)}
+              aria-label="Version history"
+              aria-pressed={showHistory}
+              title="Version history"
+              className={`p-1.5 rounded border transition ${
+                showHistory
+                  ? 'border-indigo-400 text-indigo-600 bg-indigo-50'
+                  : 'border-gray-200 text-gray-400 hover:text-indigo-600 hover:border-indigo-300'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </button>
+          )}
           {!isNew && (
             <button
               onClick={handleDelete}
@@ -122,17 +149,29 @@ export default function NoteEditor() {
             </label>
           )}
 
-          <div className="flex flex-col md:flex-row flex-1 gap-0 border border-gray-200 rounded overflow-hidden min-h-0">
-            <textarea
-              aria-label="Markdown editor"
-              placeholder="Write your note in Markdown…"
-              value={body}
-              onChange={e => setBody(e.target.value)}
-              className="flex-1 p-4 text-sm text-gray-700 font-mono resize-none focus:outline-none border-b md:border-b-0 md:border-r border-gray-200"
-            />
-            <div className="flex-1 p-4 overflow-auto bg-white">
-              <MarkdownPreview content={body} />
+          <div className="flex flex-1 min-h-0 gap-0">
+            <div className="flex flex-col md:flex-row flex-1 gap-0 border border-gray-200 rounded overflow-hidden min-h-0">
+              <textarea
+                aria-label="Markdown editor"
+                placeholder="Write your note in Markdown…"
+                value={body}
+                onChange={e => setBody(e.target.value)}
+                className="flex-1 p-4 text-sm text-gray-700 font-mono resize-none focus:outline-none border-b md:border-b-0 md:border-r border-gray-200"
+              />
+              <div className="flex-1 p-4 overflow-auto bg-white">
+                <MarkdownPreview content={body} />
+              </div>
             </div>
+
+            {!isNew && showHistory && (
+              <VersionHistoryPanel
+                noteId={id}
+                isSecure={isSecure}
+                onRestore={handleRestore}
+                onClose={() => setShowHistory(false)}
+                refreshKey={saveCount}
+              />
+            )}
           </div>
         </>
       )}

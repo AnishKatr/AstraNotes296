@@ -40,3 +40,11 @@ export function updateNote(id, data) {
 export function deleteNote(id) {
   return request(`${BASE}/${id}`, { method: 'DELETE' })
 }
+
+export function getVersions(id) {
+  return request(`${BASE}/${id}/versions`)
+}
+
+export function restoreVersion(id, snapshotId) {
+  return request(`${BASE}/${id}/restore/${snapshotId}`, { method: 'POST' })
+}
