@@ -68,6 +68,53 @@ describe('NoteList — lock icon for secure notes', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Phase 6: voice note icon (US-03)
+// ---------------------------------------------------------------------------
+
+describe('NoteList — microphone icon for voice notes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows mic icon for a voice note', async () => {
+    notesService.listNotes.mockResolvedValue({
+      notes: [note({ id: '1', title: 'Recording', note_type: 'voice' })],
+      total: 1,
+      next_cursor: null,
+    })
+    renderList()
+    await waitFor(() => expect(screen.getByLabelText('Voice note')).toBeInTheDocument())
+  })
+
+  it('does not show mic icon for a text note', async () => {
+    notesService.listNotes.mockResolvedValue({
+      notes: [note({ id: '2', title: 'Plain' })],
+      total: 1,
+      next_cursor: null,
+    })
+    renderList()
+    await waitFor(() => expect(screen.getByText('Plain')).toBeInTheDocument())
+    expect(screen.queryByLabelText('Voice note')).not.toBeInTheDocument()
+  })
+
+  it('shows mic icon only for voice notes in a mixed list', async () => {
+    notesService.listNotes.mockResolvedValue({
+      notes: [
+        note({ id: '1', title: 'Recording', note_type: 'voice' }),
+        note({ id: '2', title: 'Plain' }),
+        note({ id: '3', title: 'Secret', note_type: 'secure', is_encrypted: true }),
+      ],
+      total: 3,
+      next_cursor: null,
+    })
+    renderList()
+    await waitFor(() => expect(screen.getAllByRole('listitem')).toHaveLength(3))
+    expect(screen.getAllByLabelText('Voice note')).toHaveLength(1)
+    expect(screen.getAllByLabelText('Encrypted note')).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Phase 4: type filter (US-05)
 // ---------------------------------------------------------------------------
 
@@ -400,5 +447,35 @@ describe('NoteList — secure note hint', () => {
     expect(
       screen.getByText('Secure note contents are not searchable.')
     ).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 9: tag URL param filter
+// ---------------------------------------------------------------------------
+
+describe('NoteList — tag URL param filter', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    notesService.listNotes.mockResolvedValue({ notes: [], total: 0, next_cursor: null })
+  })
+
+  it('passes the tag param to listNotes when URL has ?tag=work', async () => {
+    render(
+      <MemoryRouter initialEntries={['/notes?tag=work']}>
+        <NoteList />
+      </MemoryRouter>
+    )
+    await waitFor(() => expect(notesService.listNotes).toHaveBeenCalled())
+    expect(notesService.listNotes).toHaveBeenCalledWith(
+      expect.objectContaining({ tag: 'work' })
+    )
+  })
+
+  it('does not pass a tag param when the URL has no ?tag=', async () => {
+    renderList()
+    await waitFor(() => expect(notesService.listNotes).toHaveBeenCalled())
+    const call = notesService.listNotes.mock.calls[0][0]
+    expect(call.tag).toBeFalsy()
   })
 })

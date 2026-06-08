@@ -51,5 +51,5 @@ class EncryptionService:
             data = base64.b64decode(ciphertext)
             nonce, ct = data[:_NONCE_BYTES], data[_NONCE_BYTES:]
             return self._aesgcm.decrypt(nonce, ct, None).decode()
-        except (InvalidTag, Exception) as exc:
+        except Exception as exc:  # catches InvalidTag, binascii.Error, UnicodeDecodeError, etc.
             raise DecryptionFailedError("Decryption failed.") from exc

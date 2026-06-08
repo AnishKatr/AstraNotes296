@@ -1,3 +1,61 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    /* AstraNotes light theme */
+    --background: 0 0% 100%;
+    --foreground: 229 23% 14%;
+    --card: 240 19% 97%;
+    --card-foreground: 229 23% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 229 23% 14%;
+    --primary: 247 74% 63%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 249 69% 95%;
+    --secondary-foreground: 247 74% 40%;
+    --muted: 240 19% 97%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 249 69% 95%;
+    --accent-foreground: 247 74% 40%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 8% 91%;
+    --input: 240 8% 91%;
+    --ring: 247 74% 63%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* AstraNotes dark theme */
+    --background: 227 19% 10%;
+    --foreground: 230 15% 92%;
+    --card: 225 18% 13%;
+    --card-foreground: 230 15% 92%;
+    --popover: 227 19% 10%;
+    --popover-foreground: 230 15% 92%;
+    --primary: 248 79% 71%;
+    --primary-foreground: 227 19% 10%;
+    --secondary: 245 27% 20%;
+    --secondary-foreground: 248 79% 71%;
+    --muted: 225 18% 13%;
+    --muted-foreground: 221 10% 64%;
+    --accent: 245 27% 20%;
+    --accent-foreground: 248 79% 71%;
+    --destructive: 0 62% 40%;
+    --destructive-foreground: 230 15% 92%;
+    --border: 226 11% 19%;
+    --input: 226 11% 19%;
+    --ring: 248 79% 71%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

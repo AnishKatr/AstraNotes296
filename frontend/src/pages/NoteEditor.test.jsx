@@ -7,6 +7,11 @@ import NoteEditor from './NoteEditor'
 
 vi.mock('../services/notes')
 
+// TagEditor calls getTags on mount — must be mocked for every NoteEditor test.
+beforeEach(() => {
+  notesService.getTags.mockResolvedValue({ tags: [] })
+})
+
 function renderEditor(path = '/notes/new') {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -115,5 +120,92 @@ describe('NoteEditor — decryption failure', () => {
     await waitFor(() =>
       expect(screen.queryByPlaceholderText('Write your note in Markdown…')).not.toBeInTheDocument()
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NoteEditor — export
+// ---------------------------------------------------------------------------
+
+describe('NoteEditor — export dropdown', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    notesService.getTags.mockResolvedValue({ tags: [] })
+    notesService.getNote.mockResolvedValue({
+      id: 'exp1',
+      title: 'My Export Note',
+      body: 'Hello world',
+      note_type: 'text',
+      is_encrypted: false,
+      tags: [],
+    })
+    // URL.createObjectURL is not implemented in jsdom
+    URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+    URL.revokeObjectURL = vi.fn()
+  })
+
+  it('shows the export button for an existing note', async () => {
+    renderEditor('/notes/exp1')
+    await waitFor(() => expect(screen.getByDisplayValue('My Export Note')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /export note/i })).toBeInTheDocument()
+  })
+
+  it('does not show the export button for a new note', () => {
+    renderEditor('/notes/new')
+    expect(screen.queryByRole('button', { name: /export note/i })).not.toBeInTheDocument()
+  })
+
+  it('opens dropdown with both export options', async () => {
+    renderEditor('/notes/exp1')
+    await waitFor(() => expect(screen.getByDisplayValue('My Export Note')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /export note/i }))
+    expect(screen.getByText('Export as Markdown')).toBeInTheDocument()
+    expect(screen.getByText('Export as PDF')).toBeInTheDocument()
+  })
+
+  it('markdown export creates a download link with .md extension', async () => {
+    const appendSpy = vi.spyOn(document.body, 'appendChild')
+    renderEditor('/notes/exp1')
+    await waitFor(() => expect(screen.getByDisplayValue('My Export Note')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /export note/i }))
+    await userEvent.click(screen.getByText('Export as Markdown'))
+    expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    const anchor = appendSpy.mock.calls.find(([el]) => el?.tagName === 'A')?.[0]
+    expect(anchor).toBeDefined()
+    expect(anchor.download).toMatch(/\.md$/)
+    appendSpy.mockRestore()
+  })
+
+  it('markdown export blob starts with H1 title', async () => {
+    renderEditor('/notes/exp1')
+    await waitFor(() => expect(screen.getByDisplayValue('My Export Note')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /export note/i }))
+    await userEvent.click(screen.getByText('Export as Markdown'))
+    const blob = URL.createObjectURL.mock.calls[0][0]
+    const text = await blob.text()
+    expect(text).toMatch(/^# My Export Note/)
+  })
+
+  it('markdown export blob includes the note body', async () => {
+    renderEditor('/notes/exp1')
+    await waitFor(() => expect(screen.getByDisplayValue('My Export Note')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /export note/i }))
+    await userEvent.click(screen.getByText('Export as Markdown'))
+    const blob = URL.createObjectURL.mock.calls[0][0]
+    const text = await blob.text()
+    expect(text).toContain('Hello world')
+  })
+
+  it('pdf export calls window.open', async () => {
+    const mockPrint = vi.fn()
+    const mockWin = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn(), print: mockPrint }
+    vi.spyOn(window, 'open').mockReturnValue(mockWin)
+    renderEditor('/notes/exp1')
+    await waitFor(() => expect(screen.getByDisplayValue('My Export Note')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /export note/i }))
+    await userEvent.click(screen.getByText('Export as PDF'))
+    expect(window.open).toHaveBeenCalledWith('', '_blank')
+    expect(mockPrint).toHaveBeenCalled()
+    vi.restoreAllMocks()
   })
 })

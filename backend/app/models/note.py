@@ -20,7 +20,9 @@ class Note:
     title: str
     body: str
     note_type: str
+    is_encrypted: bool = False
     is_deleted: bool = False
+    tags: list = field(default_factory=list)
     created_at: datetime = field(default_factory=_utc_now)
     updated_at: datetime = field(default_factory=_utc_now)
 
@@ -29,7 +31,9 @@ class Note:
             "title": self.title,
             "body": self.body,
             "note_type": self.note_type,
+            "is_encrypted": self.is_encrypted,
             "deleted": self.is_deleted,
+            "tags": self.tags,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

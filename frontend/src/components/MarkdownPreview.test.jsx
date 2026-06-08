@@ -57,4 +57,44 @@ describe('MarkdownPreview', () => {
     expect(container.querySelector('table')).toBeInTheDocument()
     expect(screen.getByText('Alice')).toBeInTheDocument()
   })
+
+  it('renders italic text as em', () => {
+    const { container } = render(<MarkdownPreview content="*italic text*" />)
+    expect(container.querySelector('em')).toHaveTextContent('italic text')
+  })
+
+  it('renders an ordered list', () => {
+    render(<MarkdownPreview content={'1. first\n2. second\n3. third'} />)
+    const items = screen.getAllByRole('listitem')
+    expect(items).toHaveLength(3)
+    expect(items[1]).toHaveTextContent('second')
+  })
+
+  it('renders a blockquote', () => {
+    const { container } = render(<MarkdownPreview content="> quoted text" />)
+    expect(container.querySelector('blockquote')).toBeInTheDocument()
+    expect(container.querySelector('blockquote')).toHaveTextContent('quoted text')
+  })
+
+  it('renders a link with href', () => {
+    const { container } = render(<MarkdownPreview content="[click me](https://example.com)" />)
+    const link = container.querySelector('a')
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute('href', 'https://example.com')
+    expect(link).toHaveTextContent('click me')
+  })
+
+  it('renders a horizontal rule', () => {
+    const { container } = render(<MarkdownPreview content={'line one\n\n---\n\nline two'} />)
+    expect(container.querySelector('hr')).toBeInTheDocument()
+  })
+
+  it('renders a language-tagged fenced code block', () => {
+    const { container } = render(
+      <MarkdownPreview content={'```javascript\nconst x = 1\n```'} />
+    )
+    const code = container.querySelector('code')
+    expect(code).toBeInTheDocument()
+    expect(code).toHaveTextContent('const x = 1')
+  })
 })

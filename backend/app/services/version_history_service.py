@@ -112,7 +112,7 @@ class VersionHistoryService:
                 try:
                     plaintext = enc_svc.decrypt(snap["body"])
                     preview = plaintext[:100]
-                except (DecryptionFailedError, Exception):
+                except DecryptionFailedError:  # enc_svc.decrypt() wraps all failures in this
                     preview = "[Could not decrypt]"
             else:
                 preview = snap["body"][:100]

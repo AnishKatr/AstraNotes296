@@ -2,15 +2,16 @@
 
 import base64
 import os
+import uuid
 
 import mongomock
+import pymongo
 import pytest
 
 from app import create_app
 
 _VALID_KEY = base64.b64encode(os.urandom(32)).decode()
-
-
+_MONGO_URI = os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017")
 
 
 # ---------------------------------------------------------------------------
@@ -21,9 +22,10 @@ _VALID_KEY = base64.b64encode(os.urandom(32)).decode()
 #   app  → Flask app, no enc key, SKIP_INDEXES
 #   client → Flask test client
 
+
 @pytest.fixture
 def search_app():
-    """App with encryption key for tests that create secure notes."""
+    """Mongomock app with encryption key for tests that need secure notes but NOT $text."""
     mc = mongomock.MongoClient()
     return create_app(
         {
@@ -39,6 +41,46 @@ def search_app():
 @pytest.fixture
 def sc(search_app):
     return search_app.test_client()
+
+
+@pytest.fixture(scope="module")
+def real_mongo_client():
+    """Real MongoDB client shared across the module's text-search tests.
+
+    Skips the entire module if MongoDB is unreachable so CI without a running
+    MongoDB still passes the mongomock-based tests.
+    """
+    try:
+        client = pymongo.MongoClient(_MONGO_URI, serverSelectionTimeoutMS=2000)
+        client.server_info()
+    except Exception:
+        pytest.skip("Real MongoDB not reachable; skipping $text search tests", allow_module_level=True)
+        return None
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def real_search_app(real_mongo_client):
+    """Real MongoDB app with text index and encryption for $text search tests."""
+    db_name = f"astranotes_test_{uuid.uuid4().hex[:8]}"
+    app = create_app(
+        {
+            "TESTING": True,
+            "MONGO_CLIENT": real_mongo_client,
+            "MONGODB_DB": db_name,
+            # SKIP_INDEXES intentionally absent so _ensure_indexes() creates the text index.
+            "ENCRYPTION_KEY": _VALID_KEY,
+        }
+    )
+    yield app
+    real_mongo_client.drop_database(db_name)
+
+
+@pytest.fixture
+def rsc(real_search_app):
+    """Test client backed by a real MongoDB database with the text index active."""
+    return real_search_app.test_client()
 
 
 # ---------------------------------------------------------------------------
@@ -185,26 +227,26 @@ def test_missing_q_returns_all_notes(client):
 # Phase 4: text search (US-05 AC-2)
 # ---------------------------------------------------------------------------
 
-def test_search_by_title_matches_text_note(sc):
-    sc.post("/api/notes", json={"title": "Unique xylophone", "body": "music", "note_type": "text"})
-    sc.post("/api/notes", json={"title": "Other note", "body": "stuff", "note_type": "text"})
+def test_search_by_title_matches_text_note(rsc):
+    rsc.post("/api/notes", json={"title": "Unique xylophone", "body": "music", "note_type": "text"})
+    rsc.post("/api/notes", json={"title": "Other note", "body": "stuff", "note_type": "text"})
 
-    r = sc.get("/api/notes?q=xylophone")
+    r = rsc.get("/api/notes?q=xylophone")
     assert r.status_code == 200
     notes = r.get_json()["notes"]
     assert len(notes) == 1
     assert notes[0]["title"] == "Unique xylophone"
 
 
-def test_search_by_title_matches_secure_note(sc):
+def test_search_by_title_matches_secure_note(rsc):
     """Secure notes are findable by title since titles are stored in plaintext."""
-    sc.post(
+    rsc.post(
         "/api/notes",
         json={"title": "Unique xylophone", "body": "secret content", "note_type": "secure"},
     )
-    sc.post("/api/notes", json={"title": "Other note", "body": "stuff", "note_type": "text"})
+    rsc.post("/api/notes", json={"title": "Other note", "body": "stuff", "note_type": "text"})
 
-    r = sc.get("/api/notes?q=xylophone")
+    r = rsc.get("/api/notes?q=xylophone")
     assert r.status_code == 200
     notes = r.get_json()["notes"]
     assert len(notes) == 1
@@ -212,33 +254,34 @@ def test_search_by_title_matches_secure_note(sc):
     assert notes[0]["note_type"] == "secure"
 
 
-def test_search_body_matches_text_note(sc):
-    sc.post("/api/notes", json={"title": "Note A", "body": "xylophoneword inside", "note_type": "text"})
-    sc.post("/api/notes", json={"title": "Note B", "body": "unrelated", "note_type": "text"})
+def test_search_body_matches_text_note(rsc):
+    rsc.post("/api/notes", json={"title": "Note A", "body": "xylophoneword inside", "note_type": "text"})
+    rsc.post("/api/notes", json={"title": "Note B", "body": "unrelated", "note_type": "text"})
 
-    r = sc.get("/api/notes?q=xylophoneword")
+    r = rsc.get("/api/notes?q=xylophoneword")
     assert r.status_code == 200
     notes = r.get_json()["notes"]
     assert len(notes) == 1
     assert notes[0]["title"] == "Note A"
 
 
-def test_search_body_does_not_match_secure_note(sc):
+def test_search_body_does_not_match_secure_note(rsc):
     """Body search must not return secure notes: their bodies are AES-256-GCM ciphertext.
 
-    This is intentional by design (FR-06, SPR-01). The search term cannot appear
-    in the encrypted body stored in MongoDB, so secure notes are only findable by title.
+    This is intentional by design (FR-06, SPR-01). The text index operates on stored
+    values; since the body is base64 ciphertext, no plaintext search term will match.
+    Secure notes are only findable by title, which is always stored in plaintext.
     """
-    sc.post(
+    rsc.post(
         "/api/notes",
         json={"title": "SecureDoc", "body": "xylophoneword inside", "note_type": "secure"},
     )
-    sc.post(
+    rsc.post(
         "/api/notes",
         json={"title": "PlainDoc", "body": "xylophoneword inside", "note_type": "text"},
     )
 
-    r = sc.get("/api/notes?q=xylophoneword")
+    r = rsc.get("/api/notes?q=xylophoneword")
     assert r.status_code == 200
     notes = r.get_json()["notes"]
     titles = {n["title"] for n in notes}
@@ -246,21 +289,21 @@ def test_search_body_does_not_match_secure_note(sc):
     assert "SecureDoc" not in titles
 
 
-def test_search_and_type_filter_combined(sc):
-    sc.post("/api/notes", json={"title": "Keyword note", "body": "x", "note_type": "text"})
-    sc.post("/api/notes", json={"title": "Keyword note", "body": "x", "note_type": "voice"})
+def test_search_and_type_filter_combined(rsc):
+    rsc.post("/api/notes", json={"title": "Keyword note", "body": "x", "note_type": "text"})
+    rsc.post("/api/notes", json={"title": "Keyword note", "body": "x", "note_type": "voice"})
 
-    r = sc.get("/api/notes?q=Keyword&type=voice")
+    r = rsc.get("/api/notes?q=Keyword&type=voice")
     assert r.status_code == 200
     notes = r.get_json()["notes"]
     assert len(notes) == 1
     assert notes[0]["note_type"] == "voice"
 
 
-def test_search_no_match_returns_empty(sc):
-    sc.post("/api/notes", json={"title": "Hello", "body": "world", "note_type": "text"})
+def test_search_no_match_returns_empty(rsc):
+    rsc.post("/api/notes", json={"title": "Hello", "body": "world", "note_type": "text"})
 
-    r = sc.get("/api/notes?q=zzznomatchzzz")
+    r = rsc.get("/api/notes?q=zzznomatchzzz")
     assert r.status_code == 200
     assert r.get_json()["notes"] == []
     assert r.get_json()["total"] == 0
@@ -321,12 +364,12 @@ def test_pagination_total_unchanged_across_pages(client):
     assert r2.get_json()["total"] == total
 
 
-def test_soft_deleted_excluded_from_search(sc):
-    r = sc.post("/api/notes", json={"title": "xylophone gone", "body": "x", "note_type": "text"})
+def test_soft_deleted_excluded_from_search(rsc):
+    r = rsc.post("/api/notes", json={"title": "xylophone gone", "body": "x", "note_type": "text"})
     nid = r.get_json()["id"]
-    sc.delete(f"/api/notes/{nid}")
+    rsc.delete(f"/api/notes/{nid}")
 
-    r = sc.get("/api/notes?q=xylophone")
+    r = rsc.get("/api/notes?q=xylophone")
     assert r.status_code == 200
     assert r.get_json()["total"] == 0
 

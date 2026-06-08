@@ -7,6 +7,11 @@ import NoteEditor from '../pages/NoteEditor'
 
 vi.mock('../services/notes')
 
+// TagEditor (rendered inside NoteEditor) calls getTags on mount.
+beforeEach(() => {
+  notesService.getTags.mockResolvedValue({ tags: [] })
+})
+
 const BASE_NOTE = {
   id: 'note1',
   title: 'Test Note',
@@ -224,7 +229,7 @@ describe('VersionHistoryPanel — corrupted versions', () => {
     await waitFor(() =>
       expect(screen.getByText('Could not decrypt')).toBeInTheDocument()
     )
-    expect(screen.getByText('Could not decrypt')).toHaveClass('text-red-600')
+    expect(screen.getByText('Could not decrypt')).toHaveClass('text-destructive')
   })
 
   it('disables Restore for a corrupted version', async () => {

@@ -54,6 +54,7 @@ class Config:
     MONGODB_URI: str = os.environ.get("MONGODB_URI", "")
     MONGODB_DB: str = os.environ.get("MONGODB_DB", "astranotes")
     ENCRYPTION_KEY: str = os.environ.get("ENCRYPTION_KEY", "")
+    MAX_CONTENT_LENGTH: int = 10 * 1024 * 1024  # 10 MB; enforced by Flask for all uploads
     CORS_ORIGINS: list[str] = [
         o.strip()
         for o in os.environ.get(

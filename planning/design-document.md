@@ -95,8 +95,17 @@ All errors return JSON in the format:
 { "error": "human-readable message", "code": "ERROR_CODE" }
 ```
 
+## Search Implementation
+
+`NoteService.list_notes` uses `$text/$search` against the `notes_text_search` weighted text index (title: 10, body: 1). The text index supports full-word/token matching and is case-insensitive. Substring queries (for example, "xylo" to find "xylophone") do not match; the query must contain a full word or token.
+
+Secure note bodies are AES-256-GCM ciphertext stored as base64. The text index operates on stored values, so no plaintext search term will appear in an encrypted body. Secure notes remain findable by title, which is always stored in plaintext (FR-06, SPR-01).
+
+The text index was chosen over `$regex` after NFR-01 validation. Regex over an unindexed field forces a full collection scan; at 1,500 notes both paths are fast, but the scan grows linearly while the text index is O(log n). NFR-01's 2-second guarantee at 1,000+ notes requires the indexed path. See decision log Entry 006 for measured latencies.
+
 ## What Was Considered and Rejected
 
+- **Case-insensitive `$regex` for search**: Used in an intermediate implementation for substring matching flexibility. Replaced by `$text/$search` in the NFR-01 validation pass because `$regex` performs a full collection scan and does not scale. The accepted trade-off is that queries must be full words or tokens rather than arbitrary substrings. See decision log Entry 006.
 - **SQLite**: Initially considered but rejected in favor of MongoDB because the document model fits plugin-based note types better and supports GridFS for audio storage natively.
 - **Cloud-first deployment**: Out of scope for the current quarter. The architecture supports it (containerized Flask, MongoDB Atlas), but local-first development is the priority.
 - **Multi-user authentication**: Deferred until later phases. The architecture leaves room for JWT or session auth in the routes layer without restructuring services or models.
