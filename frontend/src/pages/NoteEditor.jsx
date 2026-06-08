@@ -48,7 +48,18 @@ export default function NoteEditor() {
   const [saveCount, setSaveCount] = useState(0)
 
   useEffect(() => {
-    if (isNew) return
+    if (isNew) {
+      setTitle('')
+      setBody('')
+      setTags([])
+      setIsSecure(false)
+      setIsVoice(false)
+      setNoteType('text')
+      setAudioFileId(null)
+      setDecryptionFailed(false)
+      setShowHistory(false)
+      return
+    }
     getNote(id)
       .then(note => {
         setTitle(note.title)

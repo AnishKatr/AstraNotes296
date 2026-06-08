@@ -6,10 +6,10 @@ const MAX_TAGS = 10
 
 export default function TagEditor({ tags = [], setTags, disabled = false }) {
   const [input, setInput] = useState('')
-  const [suggestions, setSuggestions] = useState([])
   const [allTags, setAllTags] = useState([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const inputRef = useRef(null)
+  const inputValueRef = useRef('')
 
   useEffect(() => {
     getTags()
@@ -28,6 +28,7 @@ export default function TagEditor({ tags = [], setTags, disabled = false }) {
     if (!tag || tags.includes(tag) || tags.length >= MAX_TAGS) return
     setTags([...tags, tag])
     setInput('')
+    inputValueRef.current = ''
     setShowSuggestions(false)
   }
 
@@ -65,11 +66,19 @@ export default function TagEditor({ tags = [], setTags, disabled = false }) {
             value={input}
             onChange={e => {
               setInput(e.target.value)
+              inputValueRef.current = e.target.value
               setShowSuggestions(true)
             }}
             onKeyDown={handleKeyDown}
             onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            onBlur={() => {
+              // Auto-commit any pending text so typing a tag then clicking Save works
+              // without requiring an explicit Enter press. inputValueRef avoids stale
+              // closure issues since addTag (via onMouseDown on suggestions) clears it
+              // synchronously before blur fires.
+              if (inputValueRef.current.trim()) addTag(inputValueRef.current)
+              setTimeout(() => setShowSuggestions(false), 150)
+            }}
             placeholder="Add tag…"
             aria-label="Add tag"
             className="text-xs px-2 py-0.5 rounded-full border border-dashed border-border bg-transparent text-muted-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary w-24"
