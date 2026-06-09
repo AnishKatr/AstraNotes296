@@ -118,6 +118,16 @@ npm test                     # unit and component tests
 npx playwright test          # cross-browser end-to-end tests
 ```
 
+## Continuous Integration
+
+A GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull request to any branch. It runs two parallel jobs:
+
+**Backend (pytest)** — spins up a MongoDB 7 service container, installs Python 3.11 dependencies, and runs the full pytest suite with `--cov-fail-under=80`. The CI database is isolated (`astranotes_ci`) and a throwaway encryption key is used so the real key is never exposed.
+
+**Frontend (vitest)** — installs Node 20 dependencies via `npm ci` and runs `npm run coverage`, which runs the full Vitest suite with coverage reporting.
+
+Both jobs must pass before a branch is considered green. The coverage gate on the backend enforces the 80% line coverage requirement from SPR-03 at merge time, not just locally.
+
 ## Project Artifacts
 
 The `planning/` folder contains the full SDLC trail:
